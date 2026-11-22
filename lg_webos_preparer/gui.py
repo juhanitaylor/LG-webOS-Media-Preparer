@@ -2,13 +2,14 @@
 from __future__ import annotations
 import queue
 import threading
-import traceback
 from pathlib import Path
 from .__init__ import __version__ as APP_VERSION
 from .models import PROFILES
 from .batch import process_folder
+from .joblog import CallbackHandler, job_logger
+from .ocr import OcrConfig
 
-def gui() -> None:
+def gui(*, debug: bool = False, ocr_config: OcrConfig = OcrConfig()) -> None:
     import tkinter as tk
     from tkinter import filedialog, messagebox, ttk
 
@@ -23,7 +24,7 @@ def gui() -> None:
     profile_var = tk.StringVar(value="bx")
     ocr_var = tk.BooleanVar(value=False)
     transcode_var = tk.BooleanVar(value=False)
-    seconv_var = tk.StringVar(value="seconv")
+    debug_var = tk.BooleanVar(value=debug)
     status_var = tk.StringVar(value="Ready. Scan first to see potential compatibility problems.")
     events: queue.Queue[tuple] = queue.Queue()
     busy = [False]
@@ -55,15 +56,11 @@ def gui() -> None:
     combo.bind("<<ComboboxSelected>>", lambda _: profile_var.set(combo.get().split(" | ")[0]))
     ttk.Label(frm, text="Profiles are cautious estimates, not a guarantee of playback on every firmware.", foreground="#656565").pack(anchor="w", padx=110)
 
-    opt = ttk.LabelFrame(frm, text="Optional repairs", padding=10)
+    opt = ttk.LabelFrame(frm, text="Job options", padding=10)
     opt.pack(fill="x", pady=(9, 9))
-    ttk.Checkbutton(opt, text="OCR English bitmap subtitles (requires seconv + Tesseract; review results)", variable=ocr_var).pack(anchor="w")
+    ttk.Checkbutton(opt, text="OCR English bitmap subtitles (review text and timing)", variable=ocr_var).pack(anchor="w")
     ttk.Checkbutton(opt, text="Permit H.264 conversion of incompatible SDR video in legacy 1080p mode (slow)", variable=transcode_var).pack(anchor="w", pady=(4, 7))
-    ff = ttk.Frame(opt)
-    ff.pack(fill="x")
-    ttk.Label(ff, text="seconv location:").pack(side="left")
-    ttk.Entry(ff, textvariable=seconv_var).pack(side="left", fill="x", expand=True, padx=8)
-    ttk.Button(ff, text="Locate", command=lambda: seconv_var.set(filedialog.askopenfilename(title="Locate seconv.exe") or seconv_var.get())).pack(side="left")
+    ttk.Checkbutton(opt, text="Debug logging", variable=debug_var).pack(anchor="w")
 
     butt = ttk.Frame(frm)
     butt.pack(fill="x", pady=(0, 9))
@@ -78,33 +75,34 @@ def gui() -> None:
     log_text.configure(yscrollcommand=scroll.set)
 
     def append_log(s: str) -> None:
+        follow = log_text.yview()[1] >= 0.999
         log_text.configure(state="normal")
-        log_text.insert("end", s + "\n")
-        log_text.see("end")
+        log_text.insert("end", s)
+        if follow:
+            log_text.see("end")
         log_text.configure(state="disabled")
 
     def poll() -> None:
-        try:
-            while True:
+        log_messages: list[str] = []
+        for _ in range(100):
+            try:
                 e = events.get_nowait()
-                if e[0] == "log":
-                    append_log(e[1])
-                elif e[0] == "progress":
-                    progress_var.set(100 * e[1] / e[2] if e[2] else 0)
-                elif e[0] == "done":
-                    busy[0] = False
-                    for b in buttons:
-                        b.configure(state="normal")
-                    status_var.set("Finished. See CSV/JSON report in output folder.")
-                elif e[0] == "fatal":
-                    busy[0] = False
-                    for b in buttons:
-                        b.configure(state="normal")
-                    status_var.set("Error. See log.")
-                    append_log(e[1])
-        except queue.Empty:
-            pass
-        root.after(100, poll)
+            except queue.Empty:
+                break
+            if e[0] == "log":
+                log_messages.append(e[1] + "\n")
+            elif e[0] == "progress":
+                progress_var.set(100 * e[1] / e[2] if e[2] else 0)
+                status_var.set(f"Processed {e[1]} of {e[2]} file(s).")
+            elif e[0] in {"done", "fatal"}:
+                busy[0] = False
+                for b in buttons:
+                    b.configure(state="normal")
+                status_var.set("Finished. See the summary, log and reports."
+                               if e[0] == "done" else "Job failed. See the terminal log.")
+        if log_messages:
+            append_log("".join(log_messages))
+        root.after(20 if not events.empty() else 100, poll)
 
     def start(mode: str) -> None:
         if busy[0]:
@@ -120,14 +118,16 @@ def gui() -> None:
         status_var.set(f"{mode.title()} running…")
         opts = dict(input_folder=src, output_folder=dst, profile=PROFILES[profile_var.get()],
                     mode=mode, ocr=ocr_var.get(), allow_sdr_video=transcode_var.get(),
-                    seconv=seconv_var.get().strip() or "seconv")
+                    seconv=ocr_config.seconv, tesseract=ocr_config.tesseract, tessdata=ocr_config.tessdata)
+        logger = job_logger(debug_var.get(), CallbackHandler(lambda msg: events.put(("log", msg))))
+
         def worker() -> None:
             try:
-                process_folder(**opts, logger=lambda msg: events.put(("log", msg)),
+                process_folder(**opts, logger=logger,
                                progress=lambda a, b: events.put(("progress", a, b)))
                 events.put(("done",))
             except Exception:
-                events.put(("fatal", traceback.format_exc()))
+                events.put(("fatal",))
         threading.Thread(target=worker, daemon=True).start()
 
     buttons = [ttk.Button(butt, text="1. Scan only", command=lambda: start("scan")),

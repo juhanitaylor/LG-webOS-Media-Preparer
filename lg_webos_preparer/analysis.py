@@ -2,22 +2,9 @@
 from __future__ import annotations
 import json
 import re
-import subprocess
 from pathlib import Path
-from .models import (Profile, PROFILES, Inspection, MediaError, TEXT_SUBS, BITMAP_SUBS, ENGLISH, HDR_TRANSFERS)
-
-def cmd_run(args: list[str], *, capture: bool = True, timeout: float | None = None) -> subprocess.CompletedProcess[str]:
-    try:
-        result = subprocess.run(args, stdin=subprocess.DEVNULL, text=True,
-                                encoding="utf-8", errors="replace",
-                                stdout=subprocess.PIPE if capture else subprocess.DEVNULL,
-                                stderr=subprocess.PIPE, timeout=timeout, check=False)
-    except FileNotFoundError as exc:
-        raise MediaError(f"Missing executable: {args[0]}") from exc
-    if result.returncode != 0:
-        error = (result.stderr or result.stdout or "Unknown error").strip()
-        raise MediaError(f"{' '.join(args[:2])} failed ({result.returncode}): {error[-1400:]}")
-    return result
+from .models import (Profile, Inspection, MediaError, TEXT_SUBS, BITMAP_SUBS, ENGLISH, HDR_TRANSFERS)
+from .processes import cmd_run
 
 
 def probe(path: Path, ffprobe: str = "ffprobe") -> dict:
@@ -57,7 +44,7 @@ def video_issues(video: dict, metadata: dict, profile: Profile) -> tuple[list[st
     problems, warnings = [], []
     codec = str(video.get("codec_name", "")).lower()
     w, h = int(video.get("width", 0)), int(video.get("height", 0))
-    fps = ratio_float(video.get("avg_frame_rate") or video.get("r_frame_rate"))
+    fps = frame_rate(video)
     hdr = is_hdr(video)
     if codec not in profile.video_codecs:
         problems.append(f"Video codec {codec or 'unknown'} is outside the selected profile")
@@ -67,7 +54,7 @@ def video_issues(video: dict, metadata: dict, profile: Profile) -> tuple[list[st
         problems.append(f"Frame rate {fps:.2f} exceeds {profile.max_fps:g} fps")
     if hdr and not profile.hdr:
         problems.append("HDR video is outside this SDR profile")
-    bitrate = ratio_float(video.get("bit_rate"))
+    bitrate, _ = stream_bitrate(video)
     if not bitrate:
         bitrate = ratio_float(metadata.get("format", {}).get("bit_rate"))
         if bitrate:
@@ -79,8 +66,7 @@ def video_issues(video: dict, metadata: dict, profile: Profile) -> tuple[list[st
     if str(video.get("codec_name")) == "hevc" and (str(video.get("profile", "")).lower() not in {"main", "main 10", ""}):
         warnings.append(f"Unusual HEVC profile ({video.get('profile')}); playback may fail")
     # Metadata alone cannot prove that the Dolby Vision profile works in a TV USB player.
-    tags_and_side = json.dumps(video, default=str).lower()
-    if "dovi" in tags_and_side or "dolby vision" in tags_and_side:
+    if is_dolby_vision(video):
         warnings.append("Dolby Vision detected: the exact profile and HDR10 fallback need playback testing")
     return problems, warnings
 
@@ -88,7 +74,30 @@ def video_issues(video: dict, metadata: dict, profile: Profile) -> tuple[list[st
 def is_hdr(video: dict) -> bool:
     # Dolby Vision can have a transfer tag that is incomplete or misleading.
     return (str(video.get("color_transfer", "")).lower() in HDR_TRANSFERS
-            or "dovi" in json.dumps(video, default=str).lower())
+            or is_dolby_vision(video))
+
+
+def is_dolby_vision(video: dict) -> bool:
+    if str(video.get("codec_tag_string", "")).lower() in {"dvhe", "dvh1", "dvav", "dva1"}:
+        return True
+    tags_and_side = json.dumps(video, default=str).lower()
+    return "dovi" in tags_and_side or "dolby vision" in tags_and_side
+
+
+def frame_rate(video: dict) -> float:
+    return ratio_float(video.get("avg_frame_rate")) or ratio_float(video.get("r_frame_rate"))
+
+
+def stream_bitrate(stream: dict) -> tuple[float, bool]:
+    rate = ratio_float(stream.get("bit_rate"))
+    if rate > 0:
+        return rate, False
+    for name, value in (stream.get("tags") or {}).items():
+        if name.upper() == "BPS" or name.upper().startswith("BPS-"):
+            rate = ratio_float(value)
+            if rate > 0:
+                return rate, True
+    return 0, False
 
 
 def audio_compatible(s: dict, profile: Profile) -> bool:
@@ -153,7 +162,7 @@ def inspect(path: Path, profile: Profile, ffprobe: str = "ffprobe") -> tuple[Ins
     if not videos:
         raise MediaError(f"No video stream in {path.name}")
     v = videos[0]
-    row.video = f"{stream_label(v)} {v.get('width','?')}x{v.get('height','?')} @ {ratio_float(v.get('avg_frame_rate')):.2f}fps"
+    row.video = f"{stream_label(v)} {v.get('width','?')}x{v.get('height','?')} @ {frame_rate(v):.2f}fps"
     row.audio = [stream_label(x) for x in audios]
     row.subtitles = [stream_label(x) for x in subs]
     issues, warns = video_issues(v, data, profile)
@@ -174,24 +183,31 @@ def inspect(path: Path, profile: Profile, ffprobe: str = "ffprobe") -> tuple[Ins
     elif sc.get("codec_name") not in TEXT_SUBS:
         row.warnings.append(f"Unknown English subtitle codec: {sc.get('codec_name')}")
     external = external_subtitle(path)
-    if external and srt_valid(external):
+    valid_external = None
+    if external:
+        valid_external = external if srt_valid(external) else external_subtitle(path, require_valid=True)
+    if valid_external:
         # A matching external SRT is preferable to converting embedded bitmap subtitles.
         row.problems = [issue for issue in row.problems if not issue.startswith("English subtitles are bitmap")]
         row.warnings = [warning for warning in row.warnings if not warning.startswith("No tagged English subtitle track")]
         row.warnings.append(f"External SRT detected: {external.name}; check timing on TV")
+    elif external:
+        row.warnings.append(f"External SRT could not be validated: {external.name}; consider an embedded track")
     if path.suffix.lower() not in {".mkv", ".mp4", ".m4v"}:
         row.warnings.append("Container is not a preferred LG USB format; remux to MKV may help")
     if path.stat().st_size > 4 * 1024**3:
         row.warnings.append("Over 4 GiB: USB drive must use a filesystem that supports large files (e.g. exFAT/NTFS)")
     row.status = "needs attention" if row.problems else "analysed"
-    return row, data, {"video": v, "audios": audios, "subs": subs, "audio": audio, "audio_convert": convert, "subtitle": sc}
+    return row, data, {"video": v, "audios": audios, "subs": subs, "audio": audio, "audio_convert": convert,
+                       "subtitle": sc, "external_subtitle": valid_external, "video_problems": issues,
+                       "video_warnings": warns}
 
 
-def external_subtitle(source: Path) -> Path | None:
+def external_subtitle(source: Path, *, require_valid: bool = False) -> Path | None:
     """Find pre-existing English SRT next to source, without confusing other titles."""
     for suffix in (".srt", ".eng.srt", ".en.srt", ".English.srt"):
         candidate = source.with_name(source.stem + suffix)
-        if candidate.is_file() and candidate.stat().st_size > 10:
+        if candidate.is_file() and candidate.stat().st_size > 10 and (not require_valid or srt_valid(candidate)):
             return candidate
     return None
 
