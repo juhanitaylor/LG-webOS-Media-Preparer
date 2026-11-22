@@ -1,6 +1,8 @@
 # Codex prompt: Build and validate portable Windows EXE
 
-I have opened this repository, **LG webOS Media Preparer v0.3.0**, in VS Code. Please work only in this local project. I will review all edits before putting the project on GitHub and creating a release myself.
+I have opened this repository, **LG webOS Media Preparer v0.4.0**, in VS Code. Please work only in this local project. I will review all edits before putting the project on GitHub and creating a release myself.
+
+For the implemented build and verification workflow, use `build_windows.ps1` as described in the [README](../README.md). The rest of this file records the original packaging requirements.
 
 ## Goal
 

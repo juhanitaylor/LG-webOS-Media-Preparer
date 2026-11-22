@@ -21,8 +21,8 @@ def main() -> int:
     parser.add_argument("--seconv", help="Override the automatically detected Subtitle Edit SeConv executable")
     parser.add_argument("--tesseract", help="Override the automatically detected Tesseract executable")
     parser.add_argument("--tessdata", help="Override the folder containing Tesseract's eng.traineddata")
-    parser.add_argument("--ffmpeg", default="ffmpeg")
-    parser.add_argument("--ffprobe", default="ffprobe")
+    parser.add_argument("--ffmpeg", help="Override the automatically located FFmpeg executable")
+    parser.add_argument("--ffprobe", help="Override the automatically located FFprobe executable")
     args = parser.parse_args()
     if not args.input:
         gui(debug=args.debug, ocr_config=OcrConfig(args.seconv, args.tesseract, args.tessdata))

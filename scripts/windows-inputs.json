@@ -1,0 +1,13 @@
+{
+  "msys2": ["msys2-base-x86_64-20261120.tar.xz", "https://github.com/msys2/msys2-installer/releases/download/2026-11-20/msys2-base-x86_64-20261120.tar.xz", "bd267f65e3656706d5e3b27d4f7d6c498e8ee3a54fcc3be200b7079bfc01f74a"],
+  "ffmpeg": ["ffmpeg-9.0.2.tar.xz", "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz", "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"],
+  "x264": ["x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz", "https://code.videolan.org/videolan/x264/-/archive/b35605ace3ddf7c1a5d67a2eb553f034aef41d55/x264-b35605ace3ddf7c1a5d67a2eb553f034aef41d55.tar.gz", "cd71a7515b0e9a012e1ac9b1f8415bebcaf6fc97d4db32286642ac4c0fbe24f9"],
+  "tesseract": ["tesseract-5.5.3.tar.gz", "https://codeload.github.com/tesseract-ocr/tesseract/tar.gz/refs/tags/5.5.3", "9218e62793116d42a9f6d14cd9348518b27f382096eea3d0f2d1a24616bb5884"],
+  "leptonica": ["leptonica-1.87.0.tar.gz", "https://codeload.github.com/DanBloomberg/leptonica/tar.gz/refs/tags/1.87.0", "fa2b40c5caea96d1bb93a97486262aed8731b69ce25a84a6bf5d25323e33f631"],
+  "libpng": ["libpng-1.6.59.tar.gz", "https://codeload.github.com/pnggroup/libpng/tar.gz/refs/tags/v1.6.59", "2540302a1844ad2b2b501977abecfa850f265f97b78f065a712ab4074a89f5b5"],
+  "zlib": ["zlib-1.4.tar.gz", "https://zlib.net/zlib-1.4.tar.gz", "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584"],
+  "seconv": ["subtitleedit-5.4.0.tar.gz", "https://codeload.github.com/SubtitleEdit/subtitleedit/tar.gz/refs/tags/v5.4.0", "b4498121d002197a07173fd8a9039c3ada12f385075eb9bf554db280e8d83997"],
+  "dotnet": ["dotnet-sdk-10.0.403-win-x64.zip", "https://builds.dotnet.microsoft.com/dotnet/Sdk/10.0.403/dotnet-sdk-10.0.403-win-x64.zip", "f398979a9cac2dba760771c4e01f16e431dcd6bcfb2213e3e8f5b3d354095cc0"],
+  "eng": ["eng.traineddata", "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/4.1.0/eng.traineddata", "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"],
+  "python": ["python-3.14.10-amd64.exe", "https://www.python.org/ftp/python/3.14.10/python-3.14.10-amd64.exe", "92480239264744fe0386a1bd8275786fefa126e3129e56a68e22b52c73329965"]
+}

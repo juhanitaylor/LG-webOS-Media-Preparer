@@ -1,0 +1,52 @@
+name: Build portable Windows EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Set up Python x64
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14.10'
+          architecture: x64
+      - name: Build and test
+        shell: pwsh
+        run: .\build_windows.ps1
+      - name: Verify the delivery checksum
+        id: delivery
+        shell: pwsh
+        run: |
+          $manifest = Get-Content 'dist/provenance.json' -Raw | ConvertFrom-Json
+          $exe = "dist/$($manifest.executable.file)"
+          $checksum = "$exe.sha256"
+          $expected = (Get-Content -LiteralPath $checksum -Raw).Split(' ')[0]
+          $actual = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          if ($expected -ne $actual -or $expected -ne $manifest.executable.sha256) {
+            throw 'Executable checksum mismatch'
+          }
+          "exe=$exe" >> $env:GITHUB_OUTPUT
+          "checksum=$checksum" >> $env:GITHUB_OUTPUT
+          "EXE SHA-256: $actual" >> $env:GITHUB_STEP_SUMMARY
+      - name: Upload Windows build and redistribution materials
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: lg-webos-media-preparer-windows-x64
+          if-no-files-found: error
+          compression-level: 0
+          path: |
+            ${{ steps.delivery.outputs.exe }}
+            ${{ steps.delivery.outputs.checksum }}
+            dist/provenance.json
+            dist/third-party-notices.zip
+            dist/third-party-sources.zip

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -21,6 +22,8 @@ CAPTIONS = (
     "2\n00:00:04,000 --> 00:00:05,500\n{second}\n"
 )
 ENGLISH_TEXT = ("HELLO WORLD", "THE QUICK BROWN FOX")
+PORTABLE_EXE = os.environ.get("LG_MEDIA_PORTABLE_EXE")
+OCR_SMOKE_EXE = os.environ.get("LG_MEDIA_OCR_SMOKE_EXE")
 
 
 @unittest.skipUnless(sys.platform == "win32" and shutil.which("ffmpeg") and shutil.which("ffprobe"),
@@ -119,18 +122,87 @@ class WindowsOCRTests(unittest.TestCase):
                 log = next(output.glob("*.log")).read_text(encoding="utf-8")
                 self.assertIn("Subtitle OCR failed" if enabled else "Subtitle OCR skipped", log)
 
-    @unittest.skipUnless(os.environ.get("LG_MEDIA_OCR_SMOKE_EXE"), "No local PyInstaller OCR smoke executable supplied")
-    def test_one_file_discovers_and_uses_its_own_ocr_tools(self):
-        exe = Path(os.environ["LG_MEDIA_OCR_SMOKE_EXE"]).resolve()
-        output = self.root / "frozen-results"
+    def run_portable(self, executable, *arguments, expected=0):
         env = os.environ.copy()
         env["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32")
-        env.pop("TESSDATA_PREFIX", None)
-        subprocess.run([
-            str(exe), "--input", str(self.movies), "--output", str(output), "--mode", "prepare", "--ocr", "--debug",
-            "--ffmpeg", self.ffmpeg, "--ffprobe", self.ffprobe,
-        ], env=env, cwd=self.root, check=True, timeout=120)
+        env["LOCALAPPDATA"] = str(self.root / "isolated profile")
+        for variable in ("TESSDATA_PREFIX", "PYTHONHOME", "PYTHONPATH"):
+            env.pop(variable, None)
+        result = subprocess.run([str(executable), *map(str, arguments)], env=env, cwd=self.root, timeout=120)
+        self.assertEqual(result.returncode, expected)
+
+    @unittest.skipUnless(PORTABLE_EXE or OCR_SMOKE_EXE, "No local PyInstaller executable supplied")
+    def test_one_file_discovers_and_uses_its_own_ocr_tools(self):
+        folder = self.root / "copied app café"
+        folder.mkdir()
+        source = Path(PORTABLE_EXE or OCR_SMOKE_EXE).resolve()
+        exe = folder / source.name
+        shutil.copyfile(source, exe)
+        output = self.root / "frozen-results"
+        overrides = () if PORTABLE_EXE else ("--ffmpeg", self.ffmpeg, "--ffprobe", self.ffprobe)
+        before = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in self.movies.iterdir()}
+        self.run_portable(exe, "--input", self.movies, "--output", output,
+                          "--mode", "prepare", "--ocr", "--debug", *overrides)
         rows = json.loads(next(output.glob("*.json")).read_text(encoding="utf-8"))
         self.assert_ocr_results(output, rows)
         log = next(output.glob("*.log")).read_text(encoding="utf-8")
         self.assertRegex(log, r"OCR tools: .*_MEI[^\\]+\\tools\\ocr\\seconv\\seconv\.exe")
+        self.assertEqual(before, {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in self.movies.iterdir()})
+        if PORTABLE_EXE:
+            self.assertRegex(log, r"FFprobe: .*_MEI[^\\]+\\tools\\ffprobe\.exe")
+            self.assertRegex(log, r"FFmpeg: .*_MEI[^\\]+\\tools\\ffmpeg\.exe")
+            dvd_path = next(Path(row["output"]) for row in rows if Path(row["path"]).stem == "DVD")
+            tracks = [s for s in probe(dvd_path, self.ffprobe)["streams"] if s["codec_type"] == "audio"]
+            self.assertEqual([s["codec_name"] for s in tracks], ["ac3", "flac"])
+
+    @unittest.skipUnless(PORTABLE_EXE, "No full portable build supplied")
+    def test_portable_single_file_scan_repair_and_dependency_error(self):
+        source = self.root / "embedded café.mkv"
+        subprocess.run([
+            self.ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=blue:s=320x180:d=7",
+            "-f", "lavfi", "-i", "sine=d=7", "-i", str(self.root / "en.srt"),
+            "-map", "0:v", "-map", "1:a", "-map", "2:s", "-c:v", "libx264", "-c:a", "flac",
+            "-c:s", "srt", "-metadata:s:a:0", "language=eng", "-metadata:s:s:0", "language=eng", str(source),
+        ], check=True, timeout=45)
+        original = (hashlib.sha256(source.read_bytes()).hexdigest(), source.stat().st_mtime_ns)
+        executable = Path(PORTABLE_EXE).resolve()
+        scan = self.root / "scan results"
+        self.run_portable(executable, "--input", source, "--output", scan, "--mode", "scan")
+        self.assertEqual({p.suffix for p in scan.iterdir()}, {".csv", ".json", ".log"})
+        self.assertIn("Scan results for embedded café.mkv", next(scan.glob("*.log")).read_text(encoding="utf-8"))
+
+        prepared = self.root / "prepared text"
+        self.run_portable(executable, "--input", source, "--output", prepared, "--mode", "prepare")
+        self.assertEqual([cue.text for cue in read_cues(prepared / "embedded café.srt")], list(ENGLISH_TEXT))
+        self.assertEqual(original, (hashlib.sha256(source.read_bytes()).hexdigest(), source.stat().st_mtime_ns))
+
+        failed = self.root / "failed paths"
+        self.run_portable(executable, "--input", source, "--output", failed,
+                          "--ffprobe", self.root / "missing.exe", expected=2)
+        self.assertIn("Job failed: ffprobe not found", next(failed.glob("*.log")).read_text(encoding="utf-8"))
+
+    @unittest.skipUnless(PORTABLE_EXE, "No full portable build supplied")
+    def test_forced_interruption_preserves_input_and_allows_retry(self):
+        source = self.root / "interruption.mkv"
+        subprocess.run([self.ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=white:s=1920x1080:d=15",
+                        "-f", "lavfi", "-i", "sine=d=15", "-c:v", "mpeg4", "-c:a", "aac", str(source)],
+                       check=True, timeout=100)
+        original = hashlib.sha256(source.read_bytes()).hexdigest()
+        output = self.root / "retry output"
+        exe = Path(PORTABLE_EXE).resolve()
+        cmd = [exe, "--input", source, "--output", output, "--mode", "prepare", "--profile", "legacy"]
+        with subprocess.Popen([*cmd, "--allow-sdr-transcode"], cwd=self.root) as worker:
+            try:
+                deadline = time.monotonic() + 60
+                while not list(output.glob(".lg-media-*")) and worker.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
+                self.assertTrue(list(output.glob(".lg-media-*")), "Could not observe an active staging directory")
+            finally:
+                if worker.poll() is None:
+                    subprocess.run(["taskkill.exe", "/PID", str(worker.pid), "/T", "/F"],
+                                   capture_output=True, timeout=15, check=True)
+                worker.wait(timeout=15)
+        self.assertFalse((output / source.name).exists())
+        self.run_portable(exe, "--input", source, "--output", output, "--mode", "prepare")
+        self.assertTrue((output / source.name).is_file())
+        self.assertEqual(hashlib.sha256(source.read_bytes()).hexdigest(), original)

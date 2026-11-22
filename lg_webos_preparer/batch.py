@@ -21,8 +21,8 @@ def find_videos(folder: Path, output_root: Path | None = None) -> list[Path]:
     for root, dirs, files in os.walk(folder):
         r = Path(root)
         # Ignore output folder if nested anywhere below input.
-        if output_root is not None:
-            dirs[:] = [d for d in dirs if (r / d).resolve() != output_root.resolve()]
+        dirs[:] = [d for d in dirs if not d.startswith(".lg-media-")
+                   and (output_root is None or (r / d).resolve() != output_root)]
         for name in files:
             p = r / name
             if p.suffix.lower() in VIDEO_EXTENSIONS and not p.name.startswith(".") and ".partial" not in p.name:
@@ -32,12 +32,13 @@ def find_videos(folder: Path, output_root: Path | None = None) -> list[Path]:
 
 def save_report(rows: list[Inspection], folder: Path, mode: str) -> tuple[Path, Path]:
     folder.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     stem = f"lg_media_{mode}_{timestamp}"
     output_json = unique_destination(folder / (stem + ".json"))
     output_csv = unique_destination(folder / (stem + ".csv"))
-    output_json.write_text(json.dumps([asdict(r) for r in rows], ensure_ascii=False, indent=2), encoding="utf-8")
-    with output_csv.open("w", newline="", encoding="utf-8-sig") as fh:
+    with output_json.open("x", encoding="utf-8") as fh:
+        json.dump([asdict(r) for r in rows], fh, ensure_ascii=False, indent=2)
+    with output_csv.open("x", newline="", encoding="utf-8-sig") as fh:
         writer = csv.DictWriter(fh, fieldnames=list(Inspection.__dataclass_fields__))
         writer.writeheader()
         for row in rows:
@@ -51,7 +52,7 @@ def save_report(rows: list[Inspection], folder: Path, mode: str) -> tuple[Path, 
 
 def process_folder(input_folder: Path, output_folder: Path, profile: Profile,
                    mode: str, ocr: bool = False, allow_sdr_video: bool = False,
-                   ffmpeg: str = "ffmpeg", ffprobe: str = "ffprobe", seconv: str | None = None,
+                   ffmpeg: str | None = None, ffprobe: str | None = None, seconv: str | None = None,
                    logger: logging.Logger | Callable[[str], None] | None = None,
                    progress: Callable[[int, int], None] | None = None, *,
                    debug: bool = False, tesseract: str | None = None, tessdata: str | None = None) -> list[Inspection]:
@@ -81,10 +82,10 @@ def process_folder(input_folder: Path, output_folder: Path, profile: Profile,
 
 
 def _run_batch(input_path: Path, source_root: Path, output_folder: Path, single_video: bool,
-               profile: Profile, mode: str, ocr: bool, allow_sdr_video: bool, ffmpeg: str, ffprobe: str,
+               profile: Profile, mode: str, ocr: bool, allow_sdr_video: bool, ffmpeg: str | None, ffprobe: str | None,
                ocr_config: OcrConfig, logger: logging.Logger,
                progress: Callable[[int, int], None] | None) -> list[Inspection]:
-    ffmpeg, ffprobe = resolve_tool(ffmpeg), resolve_tool(ffprobe)
+    ffmpeg, ffprobe = resolve_tool("ffmpeg", ffmpeg), resolve_tool("ffprobe", ffprobe)
     if not available_tool(ffprobe):
         raise MediaError("ffprobe not found: use a build with bundled FFmpeg or install it")
     if mode == "prepare" and not available_tool(ffmpeg):

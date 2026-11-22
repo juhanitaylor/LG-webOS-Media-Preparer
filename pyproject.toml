@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lg-webos-media-preparer"
-version = "0.3.0"
+version = "0.4.0"
 description = "Reviewable Python source for LG webOS USB media compatibility checks and conservative fixes"
 readme = "README.md"
 requires-python = ">=3.11"

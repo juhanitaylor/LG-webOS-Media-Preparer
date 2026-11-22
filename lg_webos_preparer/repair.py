@@ -4,6 +4,7 @@ Inputs are never overwritten. Video conversion is opt-in, SDR only, legacy profi
 """
 from __future__ import annotations
 import os
+import errno
 import logging
 import shutil
 import sys
@@ -18,26 +19,24 @@ from .ocr import OcrConfig, OcrSession, ocr_subtitle
 from .processes import run_ffmpeg
 from .scanlog import format_size
 
-def resolve_tool(name: str) -> str:
-    """Find a bundled PyInstaller tool before any installed executable.
-
-    In --onefile builds, sys._MEIPASS is the temporary extraction directory;
-    in --onedir builds, it is the application data directory. Both should
-    contain tools/ffmpeg.exe and tools/ffprobe.exe.
-    """
-    supplied = Path(name)
-    if supplied.is_file():
-        return str(supplied.resolve())
-    # Do not silently replace an explicitly supplied missing path.
-    if supplied.parent != Path("."):
-        return name
+def resolve_tool(name: str, override: str | None = None) -> str:
+    """Resolve a media tool without consulting the launch directory in a frozen build."""
+    if override is not None:
+        return str(Path(override).expanduser().resolve()) if Path(override).expanduser().is_file() else (
+            shutil.which(override) or str(Path(override).expanduser().resolve())
+        )
     executable = name if name.lower().endswith(".exe") else name + ".exe"
     base = getattr(sys, "_MEIPASS", None)
     if base:
-        candidate = Path(base) / "tools" / executable
-        if candidate.is_file():
-            return str(candidate)
-    # Also permit running a portable --onedir folder without PyInstaller.
+        return str(Path(base).resolve() / "tools" / executable)
+    supplied = Path(name).expanduser()
+    if supplied.is_file():
+        return str(supplied.resolve())
+    if supplied.parent != Path("."):
+        return name
+    staged = Path(__file__).resolve().parents[1] / "build" / "windows-payload" / "tools" / executable
+    if staged.is_file():
+        return str(staged)
     nearby = Path(sys.executable).resolve().parent / "tools" / executable
     if nearby.is_file():
         return str(nearby)
@@ -45,8 +44,7 @@ def resolve_tool(name: str) -> str:
 
 
 def available_tool(name: str) -> bool:
-    found = resolve_tool(name)
-    return bool(Path(found).is_file() or shutil.which(found))
+    return bool(Path(name).is_file() or (not Path(name).is_absolute() and shutil.which(name)))
 
 
 def remux(input_file: Path, dest: Path, info: dict, profile: Profile, *, convert_video: bool,
@@ -190,6 +188,26 @@ def unique_destination(dest: Path) -> Path:
     raise MediaError(f"Too many existing output files for {dest.name}")
 
 
+def publish_output(pending: Path, destination: Path) -> None:
+    """Publish a verified file without overwriting an existing destination."""
+    if os.name == "nt":
+        pending.rename(destination)
+        return
+    try:
+        os.link(pending, destination)
+    except OSError as exc:
+        if exc.errno not in {errno.EOPNOTSUPP, errno.EPERM}:
+            raise
+        # Some removable filesystems disallow hard links when accessed from a source run.
+        output = destination.open("xb")
+        try:
+            with output, pending.open("rb") as source:
+                shutil.copyfileobj(source, output)
+        except OSError:
+            destination.unlink(missing_ok=True)
+            raise
+
+
 def prepare_one(source: Path, input_root: Path, output_root: Path, profile: Profile, *,
                 ffmpeg: str, ffprobe: str, ocr_enabled: bool, seconv: str | None = None,
                 allow_sdr_video: bool, log: Callable[[str], None] | None = None,
@@ -204,6 +222,8 @@ def prepare_one(source: Path, input_root: Path, output_root: Path, profile: Prof
 
     rel = source.relative_to(input_root)
     target_dir = output_root / rel.parent
+    if not target_dir.resolve().is_relative_to(output_root.resolve()):
+        raise MediaError(f"Output directory resolves outside the selected output folder: {target_dir}")
     target_dir.mkdir(parents=True, exist_ok=True)
     estimated_required = int(source.stat().st_size * 1.04) + 16 * 1024 * 1024
     if shutil.disk_usage(target_dir).free < estimated_required:
@@ -227,11 +247,8 @@ def prepare_one(source: Path, input_root: Path, output_root: Path, profile: Prof
     suggested = source.with_suffix(".mkv").name if make_mkv else source.name
     dest = unique_destination(target_dir / suggested)
     subtitle_dst = dest.with_suffix(".srt")
-    partial = target_dir / (dest.name + (".partial.mkv" if make_mkv else ".partial"))
-    if partial.exists():
-        raise MediaError(f"Previous partial output exists: {partial}. Remove manually if unneeded")
-
-    try:
+    with tempfile.TemporaryDirectory(dir=target_dir, prefix=".lg-media-") as staging:
+        partial = Path(staging) / ("video.mkv" if make_mkv else f"video{source.suffix}")
         if make_mkv:
             logger.info("  Remuxing to MKV to %s", " and ".join(plan.remux_reasons))
             logger.info("  %s. Mapping %d original audio and %d original subtitle track(s).",
@@ -267,10 +284,7 @@ def prepare_one(source: Path, input_root: Path, output_root: Path, profile: Prof
         logger.info("  FFprobe verification passed | video: %s | default audio: %s | audio tracks: %d | subtitle tracks: %d",
                     stream_label(video), stream_label(default_audio) if default_audio else "none",
                     len(audios), sum(s.get("codec_type") == "subtitle" for s in streams))
-        os.replace(partial, dest)
-    finally:
-        if partial.exists():
-            partial.unlink()
+        publish_output(partial, dest)
 
     if info["audio_convert"]:
         row.action.append(f"Added {profile.preferred_audio.upper()} track and kept original audio")
@@ -283,7 +297,7 @@ def prepare_one(source: Path, input_root: Path, output_root: Path, profile: Prof
     row.output = str(dest)
     logger.info("  Video output: %s | %s", dest, format_size(dest.stat().st_size))
 
-    with tempfile.TemporaryDirectory(prefix="lg_media_") as workspace:
+    with tempfile.TemporaryDirectory(dir=target_dir, prefix=".lg-media-") as workspace:
         tmp = Path(workspace)
         sidecar = None
         action = ""
@@ -315,14 +329,9 @@ def prepare_one(source: Path, input_root: Path, output_root: Path, profile: Prof
                 row.warnings.append("Subtitle preparation skipped: no usable English subtitles selected")
 
             if sidecar:
-                with sidecar.open("rb") as original:
-                    output = subtitle_dst.open("xb")
-                    try:
-                        with output:
-                            shutil.copyfileobj(original, output)
-                    except OSError:
-                        subtitle_dst.unlink(missing_ok=True)
-                        raise
+                pending_srt = tmp / "publish.srt"
+                shutil.copyfile(sidecar, pending_srt)
+                publish_output(pending_srt, subtitle_dst)
                 row.subtitle_output = str(subtitle_dst)
                 row.action.append(action)
                 logger.info("  SRT output: %s | %s", subtitle_dst, format_size(subtitle_dst.stat().st_size))

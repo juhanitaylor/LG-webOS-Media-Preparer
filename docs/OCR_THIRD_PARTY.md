@@ -1,5 +1,7 @@
 # Windows OCR third-party components
 
+This page describes the development-only portable OCR staging route. The v0.4.0 distribution build uses a traceable, source-built runtime. See [Windows portable build notices](WINDOWS_THIRD_PARTY.md).
+
 The OCR payload contains separate command-line programs. The stage script records the original asset URLs and SHA-256 values in `notices/ocr-provenance.json`.
 
 | Component | Version and upstream | Licence |

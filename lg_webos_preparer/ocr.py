@@ -61,7 +61,8 @@ def discover_ocr(config: OcrConfig = OcrConfig()) -> OcrTools:
         roots.append(Path(sys.executable).resolve().parent / "tools" / "ocr")
     else:
         source_root = Path(__file__).resolve().parents[1]
-        roots.extend((source_root / "tools" / "ocr", source_root / "build" / "ocr"))
+        roots.extend((source_root / "build" / "windows-payload" / "tools" / "ocr",
+                      source_root / "tools" / "ocr", source_root / "build" / "ocr"))
     seconv = _resolve_executable("seconv", config.seconv, roots, frozen)
     tesseract = _resolve_executable("tesseract", config.tesseract, roots, frozen)
     if tesseract.name.lower() not in {"tesseract", "tesseract.exe"}:

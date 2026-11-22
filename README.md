@@ -1,6 +1,6 @@
-# LG webOS Media Preparer (source-first starter, v0.3.0)
+# LG webOS Media Preparer v0.4.0
 
-**Review this Python code in VS Code before building or publishing it.** It is a conservative USB video compatibility checker and batch preparer for **LG webOS TVs only**. The repository tracks source code. Local OCR tools and smoke builds live under the ignored `build/` directory.
+A portable Windows utility that checks and prepares USB videos for **LG webOS TVs**. The repository contains the Python application and Windows build scripts. The build places the portable executable and its redistribution materials in `dist/`.
 
 The default profile is **LG OLED55BX6LB (BX series, 2020)**. Two *approximate* profiles cover broader 4K LG televisions and older 1080p LG webOS TVs. These are heuristics, **not certification that playback will work on every LG model/firmware**.
 
@@ -21,7 +21,9 @@ lg_webos_preparer/
   gui.py                          Tkinter Windows desktop interface
   cli.py                          Command-line arguments
 tests/                            Unit, FFmpeg batch and Windows bitmap OCR tests
-scripts/stage_windows_ocr.py      Verify and stage the OCR runtime for a Windows build
+scripts/stage_windows_ocr.py      Stage OCR tools for development from Python source
+build_windows.ps1                 Build and test the portable Windows release
+LG_webOS_Media_Preparer.spec      PyInstaller one-file configuration
 .vscode/launch.json               VS Code run/debug configurations
 pyproject.toml                    Package metadata (no runtime Python packages needed)
 docs/CODEX_BUILD_PROMPT.md        Copy into Codex when ready to build an EXE
@@ -44,7 +46,7 @@ docs/CODEX_BUILD_PROMPT.md        Copy into Codex when ready to build an EXE
 2. Install Python **3.11 or newer on the development PC**, and select it with VS Code's Python extension if needed.
 3. For scanning and preparing media **from Python source**, install FFmpeg and FFprobe on your development PC. On Windows, `winget install -e --id Gyan.FFmpeg` is one option, or obtain binaries via [FFmpeg](https://ffmpeg.org/download.html). Restart VS Code after installing it. Verify `ffmpeg -version` and `ffprobe -version` in a terminal.
 4. Run `python run_gui.py` from the project folder, or use **Run > Start Debugging** in VS Code and choose the GUI configuration.
-5. Choose an **input folder**, a **different output folder**, and the `bx` profile. Use **Scan only** first and read the scan results in the terminal. Prepare a small sample and test it on the TV.
+5. Choose an **input video or folder**, a **different output folder**, and the `bx` profile. Use **Scan only** first and read the scan results in the terminal. Prepare a small sample and test it on the TV.
 
 CLI examples (PowerShell):
 
@@ -87,11 +89,7 @@ python -m lg_webos_preparer --input "D:\Videos" --output "D:\LG_Ready" --profile
 
 The app automatically finds the staged payload. Advanced source runs can use compatible tools on PATH or pass `--seconv`, `--tesseract` and `--tessdata` overrides. The Tesseract executable must have its conventional name so SeConv can find it. The app checks capabilities and loads the English model before OCR. [SeConv 5.4 command-line reference](https://github.com/SubtitleEdit/subtitleedit/blob/v5.4.0/docs/reference/command-line.md)
 
-### Add OCR to a Windows x64 PyInstaller build
-
-Stage the OCR payload, then add `--add-data 'build\ocr:tools/ocr'` to the Windows build command. Use an absolute source path if the PyInstaller spec is written outside the repository root. The one-file executable locates and runs the extracted SeConv and Tesseract tools with their DLLs and model. End users can enable OCR without installing those tools or accessing the internet. FFmpeg and FFprobe packaging is covered by the separate Windows build work.
-
-To verify OCR from within a one-file executable on a development PC, build a local smoke executable with that data tree, point `LG_MEDIA_OCR_SMOKE_EXE` at it, and rerun `python -m unittest discover -s tests -v` with FFmpeg and FFprobe available. The frozen test gives the executable the development FFmpeg paths explicitly and strips the system OCR tools from PATH.
+The portable release build uses source-built Tesseract and a self-contained SeConv with its own native DLLs. Its OCR engine works offline with the bundled English model.
 
 ## Known limitations, by design
 
@@ -105,18 +103,38 @@ To verify OCR from within a one-file executable on a development PC, build a loc
 - Video remuxes do not guarantee preservation of every rare proprietary attachment, chapter tag or unsupported stream. Keep your originals.
 - File integrity is checked via FFprobe parsing, presence of video/audio, and metadata checks. **It is not an end-to-end picture/audio playback test.**
 
-## Building a Windows executable, after code review
+## Use the portable Windows EXE
 
-See **[`docs/CODEX_BUILD_PROMPT.md`](docs/CODEX_BUILD_PROMPT.md)**. It asks Codex to produce and test a **portable Windows 10/11 `.exe`** using PyInstaller, bundling its own Python runtime, FFmpeg and FFprobe. End users should need no Python or FFmpeg installations, and there should be no installer. Packaging must be done and tested **on Windows**. A one-file PyInstaller build temporarily extracts files on launch, which is normal and still requires no installation.
+Copy `LG_webOS_Media_Preparer_v0.4.0.exe` to any writable or read-only location and double-click it. The application targets Windows 10 22H2 and Windows 11 on x64. It runs as a regular user, with its own Python, FFmpeg, FFprobe and OCR tools. It needs no network connection to scan or prepare local media.
 
-The Codex prompt **does not authorise publishing to GitHub, creating a release or pushing commits**. You will inspect the changes in VS Code, upload your repository and create a release yourself.
+The local v0.4.0 build was about **82 MiB** and opened in about **1.2 seconds** on the Windows 11 test machine. PyInstaller extracts the payload to Windows’ temporary directory at startup, so slower storage can take longer. The bundled English OCR model accounts for about **1.9 MiB** of the compressed EXE.
+
+The local build passed portable testing on Windows 11 25H2 with development tools removed from PATH. Windows 10 22H2 remains untested. The EXE is unsigned. A clean offline Windows Sandbox blocked its launch under Application Control, so clean-machine compatibility and any signing requirements should be verified against the intended deployment policy.
+
+The app remembers the last paths and TV profile in `%LOCALAPPDATA%\LG webOS Media Preparer\settings.json`. Processing writes only to your chosen output folder. An abrupt shutdown may leave a `.lg-media-*` staging folder inside the output. Scans ignore these folders and the next run uses fresh staging paths.
+
+## Build and test the Windows executable
+
+On an x64 Windows build machine, install [Python 3.14.10 x64](https://www.python.org/downloads/release/python-31410/) including Tkinter. Run this from the repository root in PowerShell.
+
+```powershell
+.\build_windows.ps1
+```
+
+Use `-Python C:\path\to\python.exe` to specify the pinned interpreter. The build downloads and verifies its inputs, builds the media tools from source, runs the source tests, generates the one-file EXE, and then tests the EXE with a restricted PATH. The first build needs internet access, several gigabytes of workspace, and time to compile the native tools. Later builds reuse the verified build inputs. The build reports the final EXE size and SHA-256, along with the measured startup time when a Windows desktop is available.
+
+The build uses the application version in the EXE filename, currently `dist/LG_webOS_Media_Preparer_v0.4.0.exe`. It also generates the matching `.sha256` file, `provenance.json`, `third-party-notices.zip`, and `third-party-sources.zip`. The source and notice archives accompany distribution. Users only need the EXE to run the app.
+
+## Download or publish a Windows build
+
+1. After the workflow is on the default branch, open **Actions → Build portable Windows EXE → Run workflow** and select the branch to build.
+2. Open the successful run and download **lg-webos-media-preparer-windows-x64** from **Artifacts**. Extract the ZIP and compare the output of `Get-FileHash .\LG_webOS_Media_Preparer_v0.4.0.exe -Algorithm SHA256` with the matching checksum file.
+3. In **Releases → Draft a new release**, choose your tag and release notes. Attach the EXE, checksum, provenance, notices, and corresponding-source archive. Review the assets before publishing the draft. [Downloading Actions artifacts](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts) · [Managing releases](https://docs.github.com/en/repositories/releasing-projects-on-github/managing-releases-in-a-repository)
 
 ## Distribution and licences
 
-This starter source is provided for review; **no open-source licence has been chosen on your behalf**. Select and add a suitable `LICENSE` before publishing it publicly. Bundled FFmpeg binaries may be LGPL or GPL depending on their build configuration; GPL-enabled builds have redistributor obligations, including corresponding source. See [FFmpeg's legal guidance](https://ffmpeg.org/legal.html) and [PyInstaller's documentation](https://pyinstaller.org/en/stable/usage.html). Do not assume that adding a link to FFmpeg is sufficient for compliance.
-
-The Windows OCR payload adds MIT and Apache 2.0 components, the .NET runtime and third-party DLLs with separate terms. The staging step includes the primary licences and records binary provenance. Before redistributing a build, complete the notices and source requirements for the exact runtime dependencies. See [Windows OCR third-party components](docs/OCR_THIRD_PARTY.md).
+The repository owner selects the application’s own licence. The bundled FFmpeg and FFprobe are GPL-enabled builds because the legacy H.264 encode uses x264. Keep the matching source and notices available with the executable. See the [Windows portable build third-party notices](docs/WINDOWS_THIRD_PARTY.md) and [FFmpeg’s redistribution guidance](https://ffmpeg.org/legal.html).
 
 ## Project history
 
-This v0.3 source package refactors and revises the earlier v0.2 single-file starter code. Notable fixes include awareness of existing SRTs during scanning, default audio selection and filename collision avoidance. The same conservative core workflows remain. It is an **early reviewable implementation**, not a production-certified release.
+v0.4.0 adds portable Windows packaging, per-user settings, and file selection in the GUI. The v0.3 series added optional bitmap OCR and detailed operational logging.
