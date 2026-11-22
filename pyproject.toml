@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=70"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lg-webos-media-preparer"
+version = "0.3.0"
+description = "Reviewable Python source for LG webOS USB media compatibility checks and conservative fixes"
+readme = "README.md"
+requires-python = ">=3.11"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: Microsoft :: Windows",
+    "Topic :: Multimedia :: Video :: Conversion",
+]
+
+[project.scripts]
+lg-webos-preparer = "lg_webos_preparer.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["lg_webos_preparer*"]

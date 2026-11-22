@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "LG Media Preparer: GUI",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/run_gui.py",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    },
+    {
+      "name": "LG Media Preparer: CLI help",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "lg_webos_preparer",
+      "args": ["--help"],
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}
